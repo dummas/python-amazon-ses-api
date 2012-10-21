@@ -1,4 +1,5 @@
-#Copyright (c) 2011 Vladimir Pankratiev http://tagmask.com 
+#Copyright (c) 2011 Vladimir Pankratiev http://tagmask.com
+# Additional development by Richie Foreman <richie.foreman@gmail.com>
 #
 #Permission is hereby granted, free of charge, to any person obtaining a copy
 #of this software and associated documentation files (the "Software"), to deal
@@ -18,7 +19,6 @@
 #OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 #THE SOFTWARE.
 
-import httplib
 import urllib
 import hashlib
 import hmac
@@ -26,6 +26,10 @@ import logging
 import base64
 from datetime import datetime
 from xml.etree.ElementTree import XML
+import httplib2
+
+http = httplib2.Http()
+SES_URI = "https://email.us-east-1.amazonaws.com"
 
 log = logging.getLogger(__name__)
 
@@ -51,15 +55,12 @@ class AmazonSES:
     def _performAction(self, actionName, params=None):
         if not params:
             params = {}
-        params['Action'] = actionName        
-        #https://email.us-east-1.amazonaws.com/
-        conn = httplib.HTTPSConnection('email.us-east-1.amazonaws.com')
-        params = urllib.urlencode(params)
-        conn.request('POST', '/', params, self._getHeaders())
-        response = conn.getresponse()
-        responseResult = response.read()
-        conn.close()
-        return self._responseParser.parse(actionName, response.status, response.reason, responseResult)
+        params['Action'] = actionName
+        response, content = http.request(uri=SES_URI,
+                                         method="POST",
+                                         body=urllib.urlencode(params),
+                                         headers=self._getHeaders())
+        return self._responseParser.parse(actionName, response.status, response.reason, content)
         
     def verifyEmailAddress(self, emailAddress):
         params = { 'EmailAddress': emailAddress }
@@ -77,7 +78,10 @@ class AmazonSES:
         
     def listVerifiedEmailAddresses(self):
         return self._performAction('ListVerifiedEmailAddresses')
-        
+
+    def sendRawEmail(self, rawMessage):
+        return self._performAction("SendRawEmail", params={"RawMessage.Data": base64.b64encode(rawMessage)})
+
     def sendEmail(self, source, toAddresses, message, replyToAddresses=None, returnPath=None, ccAddresses=None, bccAddresses=None):
         params = { 'Source': source }
         for objName, addresses in zip(["ToAddresses", "CcAddresses", "BccAddresses"], [toAddresses, ccAddresses, bccAddresses]):
@@ -229,7 +233,7 @@ class AmazonResponseParser:
     def _parseSendEmail(self, actionName, xmlResponse):
         if xmlResponse.checkActionName(actionName):
             requestId = xmlResponse.getChildText('ResponseMetadata', 'RequestId')
-            messageId = xmlResponse.getChildText('SendEmailResult', 'MessageId')
+            messageId = xmlResponse.getChildText('%sResult' % actionName, 'MessageId')
             return AmazonSendEmailResult(requestId, messageId)
     
     def _raiseError(self, xmlResponse):
@@ -250,7 +254,7 @@ class AmazonResponseParser:
         else:
             if actionName in self._simpleResultActions:
                 result = self._parseSimpleResult(actionName, xmlResponse)
-            elif actionName in ['SendEmail']:
+            elif actionName in ['SendEmail', "SendRawEmail"]:
                 result = self._parseSendEmail(actionName, xmlResponse)
             elif actionName == 'GetSendQuota':
                 result = self._parseSendQuota(actionName, xmlResponse)
